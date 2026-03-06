@@ -52,7 +52,7 @@ The FastAPI container connects to the MySQL container using Docker's internal ne
 ### 1. Clone the Repository
 
 ```
-git clone https://github.com/your-repo/fastapi-mysql-docker.git
+git clone https://github.com/clialim/fastapi-mysql-docker.git
 cd fastapi-mysql-docker
 ```
 

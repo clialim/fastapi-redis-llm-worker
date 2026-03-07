@@ -7,7 +7,7 @@ app = FastAPI()
 
 @app.get("/")
 async def root_handler():
-    return {"ping": "pong2"}
+    return {"ping": "pong"}
 
 
 @app.get("/users")

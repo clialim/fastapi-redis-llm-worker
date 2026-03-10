@@ -1,6 +1,7 @@
 services:
   api:
     build: ./api
+    working_dir: /app
     ports:
       - "80:8000"
     depends_on:
@@ -8,24 +9,44 @@ services:
       - redis
     volumes:
       - ./api:/app
+    networks:
+      - backend
 
   db:
     image: mysql:8.0
     environment:
-      MYSQL_ROOT_PASSWORD: 1234
+      MYSQL_ROOT_PASSWORD: "1234" # 비밀번호는 문자열로 감싸는 것이 안전합니다
       MYSQL_DATABASE: oz
     ports:
       - "33065:3306"
     volumes:
       - db_data:/var/lib/mysql
     restart: always
+    networks:
+      - backend
 
   worker:
     build: ./worker
+    working_dir: /app
     depends_on:
       - redis
     restart: always
+    volumes:
+      - ./worker:/app # 워커도 실시간 코드 반영을 원하신다면 추가
+    networks:
+      - backend
+
   redis:
-    image: redis:8
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - backend
+
 volumes:
   db_data:
+
+
+networks:
+  backend:
+    driver: bridge

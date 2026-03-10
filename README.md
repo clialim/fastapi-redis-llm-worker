@@ -1,60 +1,91 @@
-# FastAPI + MySQL + Redis Worker (Docker)
+# Async LLM Inference Backend with FastAPI, Redis, and Docker
 
-Containerized backend example with FastAPI, MySQL, Redis, and background workers using Docker Compose.
+A containerized backend system demonstrating an **asynchronous LLM inference architecture** using **FastAPI**, **Redis**, and a **Llama-based worker service**.
 
-## Overview
-
-This project demonstrates how to build a containerized backend system using **FastAPI**, **MySQL**, and **Redis** with **Docker Compose**.
-
-The architecture separates the application into two services:
-
-* **API service** – Handles HTTP requests and database operations
-* **Worker service** – Processes background jobs using Redis
-
-This structure reflects a common backend pattern used in production systems where long-running tasks are processed asynchronously.
+This project separates HTTP request handling from AI inference workloads by using a **Redis job queue and pub/sub messaging pattern**.
 
 ---
 
-## Tech Stack
+# Overview
+
+In many AI services, **LLM inference can take several seconds**.
+Running inference directly inside the API server would block requests and reduce scalability.
+
+This project demonstrates a **decoupled architecture** where:
+
+* the **API service** handles HTTP requests
+* **Redis** manages job queues and result messaging
+* a **worker service** performs LLM inference
+
+This design is commonly used in production AI systems.
+
+---
+
+# Tech Stack
 
 * FastAPI
-* SQLAlchemy
-* MySQL 8
 * Redis
+* MySQL
+* llama-cpp-python
 * Docker
 * Docker Compose
 
+LLM Model:
+
+* Llama-3.2-1B-Instruct (GGUF format)
+
 ---
 
-## Architecture
+# Architecture
 
-```text
-Client (Browser / API Client)
-            │
-            ▼
-       FastAPI (API)
-            │
-            ├───────────────► MySQL
-            │
-            ▼
-           Redis
-            │
-            ▼
-          Worker
+```
+Client
+   │
+   ▼
+FastAPI API
+   │
+   │ push job
+   ▼
+Redis Queue (inference_queue)
+   │
+   ▼
+LLM Worker
+   │
+   │ publish result
+   ▼
+Redis Pub/Sub (result:{job_id})
+   │
+   ▼
+FastAPI API
+   │
+   ▼
+Client
 ```
 
-**Flow**
+Additional service:
 
-1. Client sends a request to the FastAPI server
-2. FastAPI reads/writes data from MySQL
-3. Tasks can be pushed to Redis
-4. Worker consumes tasks from Redis and processes them
+```
+FastAPI API ──► MySQL
+```
 
 ---
 
-## Project Structure
+# Request Flow
 
-```text
+1. Client sends a POST request to `/chats`
+2. API generates a unique `job_id`
+3. API subscribes to Redis channel `result:{job_id}`
+4. API pushes the job to Redis queue `inference_queue`
+5. Worker consumes the job using `BRPOP`
+6. Worker runs LLM inference
+7. Worker publishes the result to `result:{job_id}`
+8. API receives the result and returns it to the client
+
+---
+
+# Project Structure
+
+```
 .
 ├── api
 │   ├── Dockerfile
@@ -63,149 +94,287 @@ Client (Browser / API Client)
 │   └── requirements.txt
 │
 ├── worker
+│   ├── models
+│   │   └── Llama-3.2-1B-Instruct-Q4_K_M.gguf
 │   ├── Dockerfile
 │   ├── main.py
 │   └── requirements.txt
 │
 ├── docker-compose.yml
+├── .dockerignore
 ├── .gitignore
 └── README.md
 ```
 
 ---
 
-## Services
+# Services
 
-### API
+## API (FastAPI)
 
-FastAPI server that:
+Handles HTTP requests and communicates with Redis and MySQL.
 
-* handles HTTP requests
-* connects to MySQL using SQLAlchemy
-* may push tasks to Redis
+Responsibilities:
 
-### Worker
+* receive client requests
+* create inference jobs
+* push jobs to Redis queue
+* subscribe to Redis pub/sub channels
+* return LLM responses to clients
 
-Background service that:
+API server runs on:
 
-* listens to Redis queues
-* processes asynchronous jobs
+```
+http://localhost
+```
+
+Swagger documentation:
+
+```
+http://localhost/docs
+```
+
+(Docker maps port `80 → 8000`)
 
 ---
 
-## Getting Started
+## Worker (LLM Inference)
 
-### 1. Clone the Repository
+Background service responsible for running LLM inference.
+
+Responsibilities:
+
+* listen to Redis queue
+* run LLM inference
+* publish results back to API
+
+Worker processes jobs continuously.
+
+---
+
+## Redis
+
+Redis acts as both:
+
+1. **Job Queue**
+
+```
+inference_queue
+```
+
+API pushes jobs using:
+
+```
+LPUSH inference_queue
+```
+
+Worker consumes jobs using:
+
+```
+BRPOP inference_queue
+```
+
+2. **Pub/Sub Messaging**
+
+Result channel format:
+
+```
+result:{job_id}
+```
+
+Worker publishes results and API subscribes to the same channel.
+
+---
+
+## MySQL
+
+MySQL is used for persistent data storage.
+
+Configuration:
+
+```
+MYSQL_DATABASE=oz
+```
+
+Port mapping:
+
+```
+localhost:33065
+```
+
+Data is persisted using Docker volume:
+
+```
+db_data
+```
+
+---
+
+# API Endpoint
+
+## POST /chats
+
+Send a question to the LLM worker.
+
+Request:
+
+```json
+{
+  "question": "What is Docker?"
+}
+```
+
+Response:
+
+```json
+{
+  "result": "Docker is a platform for developing, shipping, and running applications in containers..."
+}
+```
+
+---
+
+# Worker Implementation
+
+The worker continuously processes inference jobs.
+
+```
+while True:
+    _, job_data = redis_client.brpop("inference_queue")
+
+    job = json.loads(job_data)
+
+    answer = create_response(question=job["question"])
+
+    channel = f"result:{job['id']}"
+
+    redis_client.publish(channel, answer)
+```
+
+Key characteristics:
+
+* blocking queue consumption using `BRPOP`
+* sequential job processing
+* result delivery through Redis pub/sub
+
+---
+
+# LLM Model
+
+The worker runs a local Llama model using **llama-cpp-python**.
+
+Place the model file in:
+```
+./models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+```
+
+The model is loaded **once during worker startup** to avoid repeated initialization overhead.
+
+---
+
+# Prompt Design
+
+The worker uses a system prompt to control response behavior.
+
+```
+SYSTEM_PROMPT = (
+    "You are a concise assistant. "
+    "Always reply in the same language as the user's input. "
+    "Do not change the language. "
+    "Do not mix languages."
+)
+```
+
+This ensures language consistency in multilingual inputs.
+
+---
+
+# Running the Project
+
+## 1 Clone the repository
 
 ```
 git clone https://github.com/clialim/fastapi-mysql-docker.git
 cd fastapi-mysql-docker
 ```
 
-### 2. Build and Start Containers
+---
+
+## 2 Place the model file
+
+Download the GGUF model and place it in:
+
+```
+worker/models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+```
+
+---
+
+## 3 Build and start containers
 
 ```
 docker compose up --build
 ```
 
-### 3. Access the API
-
-Open your browser:
+Containers started:
 
 ```
-http://localhost
-```
-
----
-
-## API Endpoint
-
-### Get Users
-
-```
-GET /
-```
-
-Example response:
-
-```
-{
-  "result": [
-    {
-      "id": 1,
-      "name": "Alice"
-    },
-    {
-      "id": 2,
-      "name": "Bob"
-    }
-  ]
-}
+api
+worker
+redis
+db
 ```
 
 ---
 
-## Database Configuration
+## 4 Open the API
 
-MySQL container configuration:
-
-```
-MYSQL_ROOT_PASSWORD=1234
-MYSQL_DATABASE=oz
-```
-
-Connection string used in the API:
+Swagger UI:
 
 ```
-mysql+pymysql://root:1234@db:3306/oz
+http://localhost/docs
 ```
 
 ---
 
-## Redis Worker Example
+# Container Network
 
-The worker connects to Redis and continuously checks for tasks.
-
-Example pattern:
+All services communicate through a Docker bridge network.
 
 ```
-while True:
-    job = redis_client.lpop("job_queue")
-
-    if job:
-        process(job)
+backend
 ```
 
-This pattern enables **asynchronous task processing** outside the API request lifecycle.
-
----
-
-## Development Notes
-
-* The API uses **SQLAlchemy sessionmaker** to manage database sessions.
-* Each request creates its own database session.
-* Redis enables decoupling between API and background workers.
-
-Example database session:
+Connections:
 
 ```
-with SessionFactory() as session:
-    stmt = text("SELECT * FROM users")
-    result = session.execute(stmt).mappings().all()
+api → redis
+api → db
+worker → redis
 ```
 
 ---
 
-## Future Improvements
+# Docker Volumes
 
-Possible extensions:
+MySQL data is persisted in a Docker volume.
 
-* Implement SQLAlchemy ORM models
-* Add full CRUD APIs
-* Introduce `.env` configuration
-* Add Redis task queue examples
-* Add database migrations with Alembic
-* Add API authentication
-* Add logging and monitoring
-* Integrate AI/LLM background processing
+```
+db_data
+```
+
+This prevents data loss when containers restart.
+
+---
+
+# Possible Improvements
+
+Potential improvements for production environments:
+
+* job timeout handling
+* retry mechanism for failed jobs
+* request rate limiting
+* logging and monitoring
+* distributed worker scaling
+* queue management using Redis Streams or Celery
 

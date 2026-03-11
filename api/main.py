@@ -3,6 +3,7 @@ import uuid
 from contextlib import asynccontextmanager
 from redis import asyncio as aredis
 from fastapi import FastAPI, Body
+from fastapi.responses import StreamingResponse
 
 # Redis 클라이언트를 전역으로 선언하되 연결 관리는 lifespan에서 수행
 redis_client = aredis.from_url("redis://redis:6379", decode_responses=True)
@@ -32,9 +33,21 @@ async def chat_handler(
     job = {"id": job_id, "question": question}
     await redis_client.lpush("inference_queue", json.dumps(job))
 
-    result = None
-    async for message in pubsub.listen():
-        if message["type"] == "message":
-            result = message["data"]
-            break
-    return {"result": result}
+    async def event_generator():
+        try:
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    data = message["data"]
+
+                    if data == "[DONE]":
+                        break
+
+                    yield f"data: {data}\n\n"
+        finally:
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+    )

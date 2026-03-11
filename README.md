@@ -58,6 +58,7 @@ Redis Pub/Sub (result:{job_id})
    ▼
 FastAPI API
    │
+   │ Server-Sent Events (SSE)
    ▼
 Client
 ```
@@ -226,10 +227,8 @@ Request:
 
 Response:
 
-```json
-{
-  "result": "Docker is a platform for developing, shipping, and running applications in containers..."
-}
+```
+Response: text/event-stream (streaming tokens)
 ```
 
 ---
@@ -239,16 +238,17 @@ Response:
 The worker continuously processes inference jobs.
 
 ```
-while True:
-    _, job_data = redis_client.brpop("inference_queue")
+channel = f"result:{job['id']}"
 
-    job = json.loads(job_data)
+stream = create_response(question=job["question"])
 
-    answer = create_response(question=job["question"])
+for chunk in stream:
+    token = chunk["choices"][0]["delta"].get("content")
 
-    channel = f"result:{job['id']}"
+    if token:
+        redis_client.publish(channel, token)
 
-    redis_client.publish(channel, answer)
+redis_client.publish(channel, "[DONE]")
 ```
 
 Key characteristics:
@@ -265,7 +265,7 @@ The worker runs a local Llama model using **llama-cpp-python**.
 
 Place the model file in:
 ```
-./models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
+worker/models/Llama-3.2-1B-Instruct-Q4_K_M.gguf
 ```
 
 The model is loaded **once during worker startup** to avoid repeated initialization overhead.
@@ -294,8 +294,8 @@ This ensures language consistency in multilingual inputs.
 ## 1 Clone the repository
 
 ```
-git clone https://github.com/clialim/fastapi-mysql-docker.git
-cd fastapi-mysql-docker
+git clone https://github.com/clialim/fastapi-redis-llm-worker.git
+cd fastapi-redis-llm-worker
 ```
 
 ---
@@ -377,4 +377,5 @@ Potential improvements for production environments:
 * logging and monitoring
 * distributed worker scaling
 * queue management using Redis Streams or Celery
+* request cancellation for streaming clients
 
